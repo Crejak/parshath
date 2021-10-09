@@ -5,9 +5,9 @@ use crate::State::{InVar, Neutral};
 fn main() {
     let grammar = "<S> ::= \"(\" <L> \")\" | \"a\"
     <L> ::= <S> <L> | \"\"";
-    let g = get_grammar(grammar).unwrap();
+    let g = Grammar::from(grammar).unwrap();
     println!("{:?}", g);
-    let p = Parser::from(g);
+    let p = Parser::from(&g);
     println!("{:?}", p);
 }
 
@@ -138,100 +138,101 @@ struct Grammar {
     rules: Vec<Rule>
 }
 
-fn get_grammar(source: &str) -> Option<Grammar> {
-    let mut rules = Vec::new();
+impl Grammar {
+    fn from(source: &str) -> Option<Grammar> {
+        let mut rules = Vec::new();
 
-    let lines = source.lines();
+        let lines = source.lines();
 
-    for (line_index, line) in lines.enumerate() {
-        let mut left = None;
-        let mut right = Vec::new();
-        let mut current_variable = String::new();
-        let mut state = Neutral;
-        let splits: Vec<&str> = line.split("::=").collect();
+        for (line_index, line) in lines.enumerate() {
+            let mut left = None;
+            let mut right = Vec::new();
+            let mut current_variable = String::new();
+            let mut state = Neutral;
+            let splits: Vec<&str> = line.split("::=").collect();
 
-        if splits.len() != 2 {
-            panic!("Found {} rule divide (::=) on line {}, expected 1", splits.len(), line_index);
-        }
-
-        // left
-        let left_str = splits[0];
-        for (_char_index, char) in left_str.chars().enumerate() {
-            if state == InVar {
-                if char == '>' {
-                    left = Some(current_variable.clone());
-                    current_variable.clear();
-                    state = Neutral;
-                    break;
-                }
-                current_variable.push(char);
-            } else if char == '<' {
-                state = InVar;
+            if splits.len() != 2 {
+                panic!("Found {} rule divide (::=) on line {}, expected 1", splits.len(), line_index);
             }
-        }
 
-        if left == None {
-            panic!("No variable found on left hand sign (line {})", line_index);
-        }
-
-        // right
-        let right_str = splits[1];
-        let mut chars_in_terminal = 0;
-        for (_char_index, char) in right_str.chars().enumerate() {
-            state = match (state, char) {
-                (State::InVar, '>') => {
-                    right.push(Symbol::var(current_variable.clone()));
-                    current_variable.clear();
-                    State::Neutral
-                },
-                (State::InVar, _) => {
-                    current_variable.push(char);
-                    State::InVar
-                },
-                (State::InTer, '"') => {
-                    if chars_in_terminal == 0 {
-                        right.push(Symbol::eps());
-                    } else {
-                        chars_in_terminal = 0;
+            // left
+            let left_str = splits[0];
+            for (_char_index, char) in left_str.chars().enumerate() {
+                if state == InVar {
+                    if char == '>' {
+                        left = Some(current_variable.clone());
+                        current_variable.clear();
+                        state = Neutral;
+                        break;
                     }
-                    State::Neutral
-                },
-                (State::InTer, _) => {
-                    right.push(Symbol::ter(char));
-                    chars_in_terminal += 1;
-                    State::InTer
-                },
-                (State::Neutral, '|') => {
-                    rules.push(Rule::from(left.clone()?, right));
-                    right = Vec::new();
-                    State::Neutral
-                },
-                (State::Neutral, '"') => {
-                    State::InTer
-                },
-                (State::Neutral, '<') => {
-                    State::InVar
-                },
-                (State::Neutral, _) => {
-                    State::Neutral
+                    current_variable.push(char);
+                } else if char == '<' {
+                    state = InVar;
                 }
-            };
+            }
+
+            if left == None {
+                panic!("No variable found on left hand sign (line {})", line_index);
+            }
+
+            // right
+            let right_str = splits[1];
+            let mut chars_in_terminal = 0;
+            for (_char_index, char) in right_str.chars().enumerate() {
+                state = match (state, char) {
+                    (State::InVar, '>') => {
+                        right.push(Symbol::var(current_variable.clone()));
+                        current_variable.clear();
+                        State::Neutral
+                    },
+                    (State::InVar, _) => {
+                        current_variable.push(char);
+                        State::InVar
+                    },
+                    (State::InTer, '"') => {
+                        if chars_in_terminal == 0 {
+                            right.push(Symbol::eps());
+                        } else {
+                            chars_in_terminal = 0;
+                        }
+                        State::Neutral
+                    },
+                    (State::InTer, _) => {
+                        right.push(Symbol::ter(char));
+                        chars_in_terminal += 1;
+                        State::InTer
+                    },
+                    (State::Neutral, '|') => {
+                        rules.push(Rule::from(left.clone()?, right));
+                        right = Vec::new();
+                        State::Neutral
+                    },
+                    (State::Neutral, '"') => {
+                        State::InTer
+                    },
+                    (State::Neutral, '<') => {
+                        State::InVar
+                    },
+                    (State::Neutral, _) => {
+                        State::Neutral
+                    }
+                };
+            }
+
+            rules.push(Rule::from(left?, right));
         }
 
-        rules.push(Rule::from(left?, right));
+        Some(Grammar {
+            rules
+        })
     }
-
-    Some(Grammar {
-        rules
-    })
 }
 
 // Parser
 #[derive(Debug)]
 struct Parser<'a> {
-    grammar: Grammar,
     table: HashMap<(&'a Symbol, &'a Variable), &'a Rule>,
-    stack: Vec<Symbol>,
+    stack: Vec<&'a Symbol>,
 }
 
 struct Node<'a> {
@@ -241,23 +242,18 @@ struct Node<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn from(grammar: Grammar) -> Self {
-        let mut parser = Parser {
-            grammar,
-            table: HashMap::new(),
-            stack: vec![Symbol::End]
-        };
+    fn from(grammar: &'a Grammar) -> Self {
         let mut table: HashMap<(&Symbol, &Variable), &Rule> = HashMap::new();
 
-        for rule in &parser.grammar.rules {
-            let fis = parser.first_set(&rule.right);
+        for rule in &grammar.rules {
+            let fis = Parser::first_set(grammar, &rule.right);
             for sym in fis {
                 if let Some(_) = table.insert((sym, &rule.left), &rule) {
                     panic!("Rule already in table");
                 }
             }
-            if parser.eps(&rule.right) {
-                let fos = parser.follow_set(&rule.left);
+            if Parser::eps(grammar, &rule.right) {
+                let fos = Parser::follow_set(&grammar, &rule.left);
                 for sym in fos {
                     if let Some(_) = table.insert((sym, &rule.left), &rule) {
                         panic!("Rule already in table");
@@ -266,15 +262,13 @@ impl<'a> Parser<'a> {
             }
         }
 
-        println!("Table :");
-        for (key, value) in table {
-            println!("{:?} ==> {:?}", key, value);
+        Parser {
+            table,
+            stack: vec![&Symbol::End]
         }
-
-        parser
     }
 
-    fn first_set(&'a self, expr: &'a [Symbol]) -> Vec<&'a Symbol> {
+    fn first_set(grammar: &'a Grammar, expr: &'a [Symbol]) -> Vec<&'a Symbol> {
         let mut set = Vec::new();
 
         let first_symbol = expr.first().unwrap();
@@ -283,11 +277,11 @@ impl<'a> Parser<'a> {
                 set.push(first_symbol)
             },
             Symbol::Var(var) => {
-                for rule in &self.grammar.rules {
+                for rule in &grammar.rules {
                     if rule.left != *var {
                         continue;
                     }
-                    set.append(&mut self.first_set(&rule.right));
+                    set.append(&mut Parser::first_set(grammar, &rule.right));
                 }
             },
             Symbol::End => panic!()
@@ -296,21 +290,21 @@ impl<'a> Parser<'a> {
         set
     }
 
-    fn eps(&'a self, expr: &'a [Symbol]) -> bool {
+    fn eps(grammar: &'a Grammar, expr: &'a [Symbol]) -> bool {
         for sym in expr {
-            if self.eps_symbol(sym) == false {
+            if Parser::eps_symbol(grammar, sym) == false {
                 return false;
             }
         }
         true
     }
 
-    fn eps_symbol(&'a self, sym: &'a Symbol) -> bool {
+    fn eps_symbol(grammar: &'a Grammar, sym: &'a Symbol) -> bool {
         match sym {
             Symbol::Ter(ter) => *ter == Terminal::Epsilon,
             Symbol::Var(var) => {
                 let mut eps_of_right = false;
-                'rule: for rule in &self.grammar.rules {
+                'rule: for rule in &grammar.rules {
                     if rule.left != *var {
                         continue;
                     }
@@ -320,7 +314,7 @@ impl<'a> Parser<'a> {
                                 continue 'symbol;
                             }
                         }
-                        if self.eps_symbol(symbol) == false {
+                        if Parser::eps_symbol(grammar, symbol) == false {
                             continue 'rule;
                         }
                     }
@@ -332,30 +326,31 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn follow_set(&'a self, var: &'a Variable) -> Vec<&Symbol> {
-        let mut result = Vec::new();
-        if self.grammar.rules.first().unwrap().left == *var {
-            result.push(&Symbol::End);
+    fn follow_set(grammar: &'a Grammar, var: &'a Variable) -> Vec<&'a Symbol> {
+        let mut set = Vec::new();
+
+        if grammar.rules.first().unwrap().left == *var {
+            set.push(&Symbol::End);
         }
-        for rule in &self.grammar.rules {
+        for rule in &grammar.rules {
             for (index, sym) in rule.right.iter().enumerate() {
                 if let Symbol::Var(variable) = sym {
                     if variable == var {
                         let (_ , right_expr) = &rule.right.split_at(index + 1);
-                        let eps = self.eps(right_expr);
+                        let eps = Parser::eps(grammar, right_expr);
                         if (eps || right_expr.is_empty()) && var != &rule.left {
-                            let fos = &mut self.follow_set(&rule.left);
-                            result.append(fos);
+                            let fos = &mut Parser::follow_set(grammar, &rule.left);
+                            set.append(fos);
                         }
                         if !right_expr.is_empty() {
-                            let fs = &mut self.first_set(right_expr);
-                            result.append(fs);
+                            let fs = &mut Parser::first_set(grammar, right_expr);
+                            set.append(fs);
                         }
                     }
                 }
             }
         }
 
-        result
+        set
     }
 }
